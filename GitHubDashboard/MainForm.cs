@@ -55,7 +55,7 @@ public partial class MainForm : Form
         _connectButton.Click += ConnectButton_Click;
 
         // Status label
-        _statusLabel = new Label
+        _statusLabel = new System.Windows.Forms.Label
         {
             Text = "Enter your GitHub token and click Connect",
             Location = new Point(10, 50),
