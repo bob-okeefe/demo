@@ -13,7 +13,7 @@ public partial class MainForm : Form
     // UI Controls
     private TextBox _tokenTextBox = null!;
     private Button _connectButton = null!;
-    private Label _statusLabel = null!;
+    private System.Windows.Forms.Label _statusLabel = null!;
     private DataGridView _pullRequestsGrid = null!;
     private Button _refreshButton = null!;
     private Button _openPrButton = null!;
@@ -32,7 +32,7 @@ public partial class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
 
         // Token input section
-        var tokenLabel = new Label
+        var tokenLabel = new System.Windows.Forms.Label
         {
             Text = "GitHub Token:",
             Location = new Point(10, 15),
