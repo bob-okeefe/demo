@@ -1,76 +1,75 @@
-# GitHub Secret Scanning Work Item Creator - Configuration Template
+# Azure DevOps Advanced Security Work Item Creator - Configuration Template
 #
 # Copy this file to 'config.ps1' and customize the values for your environment.
 # Then dot-source it in your scripts: . .\config.ps1
 
-# GitHub Configuration
-$GitHubConfiguration = @{
-    # Default GitHub token (alternatively use GITHUB_TOKEN environment variable)
-    Token = $env:GITHUB_TOKEN
+# Azure DevOps Configuration
+$AzureDevOpsConfiguration = @{
+    # Default Azure DevOps PAT (alternatively use AZURE_DEVOPS_PAT environment variable)
+    PAT = $env:AZURE_DEVOPS_PAT
     
-    # Default repository settings
-    DefaultOwner = "your-org"
+    # Default organization and project settings
+    DefaultOrganization = "your-organization"
+    DefaultProject = "your-project"
     
     # API settings
     MaxRetries = 3
     RetryDelay = 5  # seconds
+    ApiVersion = "7.1-preview.1"
 }
 
-# Work Item System Configurations
-$WorkItemSystems = @{
-    # GitHub Issues Configuration
-    GitHubIssues = @{
-        Enabled = $true
-        Token = $env:GITHUB_TOKEN  # Can be same as main GitHub token
-        Labels = @("security", "secret-scanning", "automated")
-        AssignDefaultUsers = $false
-        DefaultAssignees = @()  # Add usernames if needed
-    }
+# Work Item Configuration
+$WorkItemConfiguration = @{
+    # Default work item type
+    DefaultType = "Bug"  # Can be "Bug", "Task", "User Story", "Epic", etc.
     
-    # Azure DevOps Configuration
-    AzureDevOps = @{
-        Enabled = $false
-        Organization = "your-organization"
-        Project = "your-project"
-        PAT = $env:AZURE_DEVOPS_PAT
-        WorkItemType = "Bug"  # or "Task", "User Story", etc.
-        AreaPath = ""  # Optional: specific area path
-        IterationPath = ""  # Optional: specific iteration
-        DefaultAssignee = ""  # Optional: default assignee email
-    }
+    # Default assignment settings
+    DefaultAssignee = ""  # Leave empty for unassigned, or specify email/display name
     
-    # Jira Configuration (for future extension)
-    Jira = @{
-        Enabled = $false
-        BaseUrl = "https://your-company.atlassian.net"
-        Username = ""
-        ApiToken = $env:JIRA_API_TOKEN
-        ProjectKey = "SEC"
-        IssueType = "Bug"
-        DefaultAssignee = ""
+    # Default area and iteration paths
+    DefaultAreaPath = ""  # e.g., "MyProject\Security"
+    DefaultIterationPath = ""  # e.g., "MyProject\Sprint 1"
+    
+    # Custom field mappings (if your organization uses custom fields)
+    CustomFields = @{
+        # Example: Map severity to a custom field
+        # "Custom.SecuritySeverity" = "Severity"
     }
 }
 
 # Priority Mapping
 $PriorityMapping = @{
-    # Customize priority assignment based on secret types
+    # Customize priority assignment based on Advanced Security severity levels
     High = @(
-        "password",
-        "private.*key",
-        "secret.*key", 
-        "github.*token",
-        "aws.*secret",
-        "azure.*key"
+        "critical",
+        "high"
     )
     Medium = @(
-        "api.*key",
-        "access.*key",
-        "client.*secret"
+        "medium"
     )
     Low = @(
-        "webhook",
-        "generic.*secret"
+        "low"
     )
+}
+
+# Severity Mapping for Work Items
+$SeverityMapping = @{
+    critical = "1 - Critical"
+    high = "2 - High"
+    medium = "3 - Medium"
+    low = "4 - Low"
+}
+
+# Repository Configuration
+$RepositoryConfiguration = @{
+    # Include specific repositories (leave empty to include all)
+    IncludeRepositories = @()  # e.g., @("repo1", "repo2")
+    
+    # Exclude specific repositories
+    ExcludeRepositories = @()  # e.g., @("test-repo", "archived-repo")
+    
+    # Include resolved alerts in processing
+    IncludeResolvedAlerts = $false
 }
 
 # Output Configuration
@@ -80,7 +79,7 @@ $OutputConfiguration = @{
     
     # CSV export settings
     CsvPath = ".\exports\"
-    CsvFilePattern = "SecretScanningFindings_{Owner}_{Repo}_{Date}.csv"
+    CsvFilePattern = "SecretScanningFindings_{Organization}_{Project}_{Date}.csv"
     
     # Logging settings
     EnableLogging = $true
@@ -99,7 +98,7 @@ $NotificationConfiguration = @{
         UseSsl = $true
         From = ""
         To = @()
-        Subject = "Secret Scanning Alerts - Work Items Created"
+        Subject = "Azure DevOps Secret Scanning Alerts - Work Items Created"
     }
     
     # Slack notifications (requires webhook URL)
@@ -107,7 +106,7 @@ $NotificationConfiguration = @{
         Enabled = $false
         WebhookUrl = $env:SLACK_WEBHOOK_URL
         Channel = "#security"
-        Username = "Secret Scanner Bot"
+        Username = "Advanced Security Bot"
     }
     
     # Microsoft Teams notifications
@@ -119,16 +118,13 @@ $NotificationConfiguration = @{
 
 # Advanced Configuration
 $AdvancedConfiguration = @{
-    # Include resolved alerts in processing
-    IncludeResolvedAlerts = $false
-    
-    # Skip work item creation for specific secret types
-    SkipSecretTypes = @()
+    # Skip work item creation for specific secret types/patterns
+    SkipSecretTypes = @()  # e.g., @("Test secrets", "Generic secrets")
     
     # Custom tags to add to all work items
-    CustomTags = @("automated", "security-scan")
+    CustomTags = @("automated", "advanced-security", "secret-scanning")
     
-    # Rate limiting (requests per minute)
+    # Rate limiting (requests per minute for Azure DevOps API)
     RateLimitPerMinute = 60
     
     # Retry configuration
@@ -138,35 +134,36 @@ $AdvancedConfiguration = @{
     # Batch processing
     BatchSize = 10
     ProcessBatchDelay = 2  # seconds between batches
+    
+    # Work item template customization
+    WorkItemTemplate = @{
+        TitlePrefix = "Secret Found: "
+        DescriptionTemplate = "Advanced Security secret scanning has detected a {SecretType} in the repository."
+        IncludeRemediationSteps = $true
+        IncludeDirectLinks = $true
+    }
 }
 
 # Function to validate configuration
 function Test-Configuration {
     $errors = @()
     
-    # Check required GitHub configuration
-    if (-not $GitHubConfiguration.Token -and -not $env:GITHUB_TOKEN) {
-        $errors += "GitHub token not configured. Set GitHubConfiguration.Token or GITHUB_TOKEN environment variable."
+    # Check required Azure DevOps configuration
+    if (-not $AzureDevOpsConfiguration.PAT -and -not $env:AZURE_DEVOPS_PAT) {
+        $errors += "Azure DevOps PAT not configured. Set AzureDevOpsConfiguration.PAT or AZURE_DEVOPS_PAT environment variable."
     }
     
-    # Check enabled work item systems
-    $enabledSystems = $WorkItemSystems.Keys | Where-Object { $WorkItemSystems[$_].Enabled }
+    if (-not $AzureDevOpsConfiguration.DefaultOrganization) {
+        $errors += "AzureDevOpsConfiguration.DefaultOrganization not configured"
+    }
     
-    foreach ($system in $enabledSystems) {
-        switch ($system) {
-            'AzureDevOps' {
-                $config = $WorkItemSystems.AzureDevOps
-                if (-not $config.Organization) { $errors += "AzureDevOps.Organization not configured" }
-                if (-not $config.Project) { $errors += "AzureDevOps.Project not configured" }
-                if (-not $config.PAT -and -not $env:AZURE_DEVOPS_PAT) { $errors += "AzureDevOps.PAT not configured" }
-            }
-            'Jira' {
-                $config = $WorkItemSystems.Jira
-                if (-not $config.BaseUrl) { $errors += "Jira.BaseUrl not configured" }
-                if (-not $config.Username) { $errors += "Jira.Username not configured" }
-                if (-not $config.ApiToken -and -not $env:JIRA_API_TOKEN) { $errors += "Jira.ApiToken not configured" }
-            }
-        }
+    if (-not $AzureDevOpsConfiguration.DefaultProject) {
+        $errors += "AzureDevOpsConfiguration.DefaultProject not configured"
+    }
+    
+    # Validate work item configuration
+    if (-not $WorkItemConfiguration.DefaultType) {
+        $errors += "WorkItemConfiguration.DefaultType not configured"
     }
     
     # Create required directories
@@ -197,6 +194,27 @@ function Test-Configuration {
     return $true
 }
 
+# Function to get configuration values with fallbacks
+function Get-ConfigValue {
+    param(
+        [string]$ConfigPath,
+        [object]$DefaultValue = $null
+    )
+    
+    $pathParts = $ConfigPath -split '\.'
+    $current = $this
+    
+    foreach ($part in $pathParts) {
+        if ($current -and $current.ContainsKey($part)) {
+            $current = $current[$part]
+        } else {
+            return $DefaultValue
+        }
+    }
+    
+    return $current
+}
+
 # Export configuration for use in other scripts
-Export-ModuleMember -Variable GitHubConfiguration, WorkItemSystems, PriorityMapping, OutputConfiguration, NotificationConfiguration, AdvancedConfiguration
-Export-ModuleMember -Function Test-Configuration
+Export-ModuleMember -Variable AzureDevOpsConfiguration, WorkItemConfiguration, PriorityMapping, SeverityMapping, RepositoryConfiguration, OutputConfiguration, NotificationConfiguration, AdvancedConfiguration
+Export-ModuleMember -Function Test-Configuration, Get-ConfigValue

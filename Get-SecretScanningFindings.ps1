@@ -2,57 +2,64 @@
 
 <#
 .SYNOPSIS
-    Retrieves secret scanning findings from a GitHub repository and prepares them for work item creation.
+    Retrieves secret scanning findings from Azure DevOps Advanced Security and prepares them for work item creation.
 
 .DESCRIPTION
-    This script fetches secret scanning alerts from a specified GitHub repository using the GitHub API
-    and formats them for logging as work items. The output includes file names, secret types, and 
-    direct links to the findings for easy remediation.
+    This script fetches secret scanning alerts from Azure DevOps Advanced Security (GHAzDo) for a specified 
+    project/repository and formats them for logging as work items. The output includes file names, secret types, 
+    and direct links to the findings for easy remediation.
 
-.PARAMETER RepositoryOwner
-    The GitHub username or organization that owns the repository.
+.PARAMETER Organization
+    The Azure DevOps organization name.
 
-.PARAMETER RepositoryName
-    The name of the GitHub repository to scan for secret findings.
+.PARAMETER Project
+    The Azure DevOps project name.
 
-.PARAMETER GitHubToken
-    Personal Access Token for GitHub API authentication. Requires 'security_events' scope.
-    If not provided, the script will look for the GITHUB_TOKEN environment variable.
+.PARAMETER Repository
+    The repository name within the project (optional - if not specified, gets alerts for all repos in project).
+
+.PARAMETER PersonalAccessToken
+    Personal Access Token for Azure DevOps API authentication. Requires 'Advanced Security' read permissions.
+    If not provided, the script will look for the AZURE_DEVOPS_PAT environment variable.
 
 .PARAMETER OutputFormat
     The format for output. Valid values are 'Console', 'JSON', 'CSV'.
     Default is 'Console'.
 
 .PARAMETER IncludeResolved
-    Include resolved/closed secret scanning alerts in the results.
-    Default is false (only open alerts).
+    Include resolved/dismissed secret scanning alerts in the results.
+    Default is false (only active alerts).
 
 .EXAMPLE
-    .\Get-SecretScanningFindings.ps1 -RepositoryOwner "myorg" -RepositoryName "myrepo" -GitHubToken "ghp_xxxx"
+    .\Get-SecretScanningFindings.ps1 -Organization "myorg" -Project "myproject" -PersonalAccessToken "xxx"
     
-    Retrieves open secret scanning findings for myorg/myrepo repository.
+    Retrieves active secret scanning findings for all repositories in myorg/myproject.
 
 .EXAMPLE
-    .\Get-SecretScanningFindings.ps1 -RepositoryOwner "myorg" -RepositoryName "myrepo" -OutputFormat "JSON"
+    .\Get-SecretScanningFindings.ps1 -Organization "myorg" -Project "myproject" -Repository "myrepo" -OutputFormat "JSON"
     
-    Retrieves findings and outputs them in JSON format (uses GITHUB_TOKEN environment variable).
+    Retrieves findings for specific repository and outputs them in JSON format.
 
 .NOTES
     Author: GitHub Copilot
-    Version: 1.0
-    Requires GitHub Personal Access Token with 'security_events' scope.
+    Version: 2.0
+    Requires Azure DevOps Personal Access Token with Advanced Security read permissions.
+    Designed for Azure DevOps Advanced Security (GitHub Advanced Security for Azure DevOps).
 #>
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$RepositoryOwner,
+    [string]$Organization,
     
     [Parameter(Mandatory = $true)]
-    [string]$RepositoryName,
+    [string]$Project,
     
     [Parameter(Mandatory = $false)]
-    [string]$GitHubToken,
+    [string]$Repository,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$PersonalAccessToken,
     
     [Parameter(Mandatory = $false)]
     [ValidateSet('Console', 'JSON', 'CSV')]
@@ -78,17 +85,18 @@ function Write-ColorOutput {
     }
 }
 
-# Function to validate GitHub token
-function Test-GitHubToken {
-    param([string]$Token)
+# Function to validate Azure DevOps token
+function Test-AzureDevOpsToken {
+    param([string]$Token, [string]$Organization)
     
     try {
+        $encodedPAT = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$Token"))
         $headers = @{
-            'Authorization' = "token $Token"
-            'Accept' = 'application/vnd.github.v3+json'
+            'Authorization' = "Basic $encodedPAT"
+            'Accept' = 'application/json'
         }
         
-        $response = Invoke-RestMethod -Uri 'https://api.github.com/user' -Headers $headers -Method Get
+        $response = Invoke-RestMethod -Uri "https://dev.azure.com/$Organization/_apis/projects?api-version=7.0" -Headers $headers -Method Get
         return $true
     }
     catch {
@@ -96,55 +104,69 @@ function Test-GitHubToken {
     }
 }
 
-# Function to get secret scanning alerts
-function Get-SecretScanningAlerts {
+# Function to get secret scanning alerts from Azure DevOps Advanced Security
+function Get-AzureDevOpsSecretScanningAlerts {
     param(
-        [string]$Owner,
-        [string]$Repo,
+        [string]$Organization,
+        [string]$Project,
+        [string]$Repository,
         [string]$Token,
         [bool]$IncludeResolved
     )
     
+    $encodedPAT = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$Token"))
     $headers = @{
-        'Authorization' = "token $Token"
-        'Accept' = 'application/vnd.github.v3+json'
+        'Authorization' = "Basic $encodedPAT"
+        'Accept' = 'application/json'
     }
     
-    $uri = "https://api.github.com/repos/$Owner/$Repo/secret-scanning/alerts"
+    # Build the URI for Advanced Security alerts
+    $baseUri = "https://dev.azure.com/$Organization/$Project/_apis/advancedsecurity/alerts"
     $allAlerts = @()
     $page = 1
     
     do {
         try {
             $queryParams = @{
-                'page' = $page
-                'per_page' = 100
+                'api-version' = '7.1-preview.1'
+                '$top' = 100
+                '$skip' = ($page - 1) * 100
+                'alertType' = 'secret'
+            }
+            
+            if ($Repository) {
+                $queryParams['repository'] = $Repository
             }
             
             if (-not $IncludeResolved) {
-                $queryParams['state'] = 'open'
+                $queryParams['state'] = 'active'
             }
             
             $queryString = ($queryParams.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '&'
-            $pageUri = "$uri?$queryString"
+            $pageUri = "$baseUri?$queryString"
             
             Write-Verbose "Fetching page $page from: $pageUri"
             $response = Invoke-RestMethod -Uri $pageUri -Headers $headers -Method Get
             
-            if ($response -and $response.Count -gt 0) {
-                $allAlerts += $response
+            if ($response.value -and $response.value.Count -gt 0) {
+                $allAlerts += $response.value
                 $page++
+                
+                # Check if we have more pages
+                if ($response.value.Count -lt 100) {
+                    break
+                }
             } else {
                 break
             }
         }
         catch {
             if ($_.Exception.Response.StatusCode -eq 404) {
-                Write-Warning "Repository not found or secret scanning not enabled for $Owner/$Repo"
+                Write-Warning "Project not found or Advanced Security not enabled for $Organization/$Project"
                 return @()
             }
             elseif ($_.Exception.Response.StatusCode -eq 403) {
-                Write-Error "Access denied. Ensure your GitHub token has 'security_events' scope and you have access to this repository."
+                Write-Error "Access denied. Ensure your Azure DevOps PAT has 'Advanced Security' read permissions."
                 return @()
             }
             else {
@@ -161,39 +183,43 @@ function Get-SecretScanningAlerts {
 function Format-FindingsForWorkItems {
     param(
         [array]$Alerts,
-        [string]$Owner,
-        [string]$Repo
+        [string]$Organization,
+        [string]$Project
     )
     
     $workItems = @()
     
     foreach ($alert in $Alerts) {
         $workItem = [PSCustomObject]@{
-            AlertNumber = $alert.number
-            Title = "Secret Found: $($alert.secret_type_display_name)"
-            Description = "Secret scanning has detected a $($alert.secret_type_display_name) in the repository."
-            SecretType = $alert.secret_type_display_name
+            AlertId = $alert.alertId
+            AlertNumber = $alert.alertNumber
+            Title = "Secret Found: $($alert.title)"
+            Description = "Advanced Security secret scanning has detected a $($alert.title) in the repository."
+            SecretType = $alert.title
             State = $alert.state
-            FileName = if ($alert.locations -and $alert.locations.Count -gt 0) { 
-                $alert.locations[0].path 
+            FileName = if ($alert.instances -and $alert.instances.Count -gt 0) { 
+                $alert.instances[0].location.path 
             } else { 
                 "Location not available" 
             }
-            LineNumber = if ($alert.locations -and $alert.locations.Count -gt 0) { 
-                $alert.locations[0].start_line 
+            LineNumber = if ($alert.instances -and $alert.instances.Count -gt 0) { 
+                $alert.instances[0].location.startLine 
             } else { 
                 $null 
             }
-            GitHubAlertUrl = $alert.html_url
-            CreatedAt = $alert.created_at
-            UpdatedAt = $alert.updated_at
-            Repository = "$Owner/$Repo"
-            Priority = switch ($alert.secret_type) {
-                { $_ -match '(password|private.*key|secret.*key|token)' } { 'High' }
-                { $_ -match '(api.*key|access.*key)' } { 'Medium' }
-                default { 'Low' }
+            Repository = $alert.repository.name
+            AlertUrl = $alert._links.html.href
+            CreatedAt = $alert.introducedDate
+            UpdatedAt = $alert.fixedDate
+            Severity = $alert.severity
+            Priority = switch ($alert.severity) {
+                'critical' { 'High' }
+                'high' { 'High' }
+                'medium' { 'Medium' }
+                'low' { 'Low' }
+                default { 'Medium' }
             }
-            Tags = @("security", "secret-scanning", $alert.secret_type)
+            Tags = @("security", "secret-scanning", "advanced-security")
         }
         $workItems += $workItem
     }
@@ -203,33 +229,34 @@ function Format-FindingsForWorkItems {
 
 # Main execution
 try {
-    Write-ColorOutput "GitHub Secret Scanning Findings Retrieval Tool" -Color Cyan
-    Write-ColorOutput "================================================" -Color Cyan
+    Write-ColorOutput "Azure DevOps Advanced Security Secret Scanning Findings Tool" -Color Cyan
+    Write-ColorOutput "===========================================================" -Color Cyan
     Write-Output ""
     
-    # Validate GitHub token
-    if (-not $GitHubToken) {
-        $GitHubToken = $env:GITHUB_TOKEN
-        if (-not $GitHubToken) {
-            Write-Error "GitHub token not provided. Use -GitHubToken parameter or set GITHUB_TOKEN environment variable."
+    # Validate Azure DevOps token
+    if (-not $PersonalAccessToken) {
+        $PersonalAccessToken = $env:AZURE_DEVOPS_PAT
+        if (-not $PersonalAccessToken) {
+            Write-Error "Azure DevOps PAT not provided. Use -PersonalAccessToken parameter or set AZURE_DEVOPS_PAT environment variable."
             exit 1
         }
     }
     
-    Write-ColorOutput "Validating GitHub token..." -Color Yellow
-    if (-not (Test-GitHubToken -Token $GitHubToken)) {
-        Write-Error "Invalid GitHub token or insufficient permissions. Ensure token has 'security_events' scope."
+    Write-ColorOutput "Validating Azure DevOps PAT..." -Color Yellow
+    if (-not (Test-AzureDevOpsToken -Token $PersonalAccessToken -Organization $Organization)) {
+        Write-Error "Invalid Azure DevOps PAT or insufficient permissions. Ensure PAT has 'Advanced Security' read permissions."
         exit 1
     }
-    Write-ColorOutput "GitHub token validated successfully." -Color Green
+    Write-ColorOutput "Azure DevOps PAT validated successfully." -Color Green
     Write-Output ""
     
     # Fetch secret scanning alerts
-    Write-ColorOutput "Fetching secret scanning alerts for $RepositoryOwner/$RepositoryName..." -Color Yellow
-    $alerts = Get-SecretScanningAlerts -Owner $RepositoryOwner -Repo $RepositoryName -Token $GitHubToken -IncludeResolved $IncludeResolved.IsPresent
+    $targetDescription = if ($Repository) { "$Organization/$Project/$Repository" } else { "$Organization/$Project (all repositories)" }
+    Write-ColorOutput "Fetching secret scanning alerts for $targetDescription..." -Color Yellow
+    $alerts = Get-AzureDevOpsSecretScanningAlerts -Organization $Organization -Project $Project -Repository $Repository -Token $PersonalAccessToken -IncludeResolved $IncludeResolved.IsPresent
     
     if ($alerts.Count -eq 0) {
-        Write-ColorOutput "No secret scanning alerts found for $RepositoryOwner/$RepositoryName" -Color Green
+        Write-ColorOutput "No secret scanning alerts found for $targetDescription" -Color Green
         exit 0
     }
     
@@ -237,7 +264,7 @@ try {
     Write-Output ""
     
     # Format findings for work items
-    $workItems = Format-FindingsForWorkItems -Alerts $alerts -Owner $RepositoryOwner -Repo $RepositoryName
+    $workItems = Format-FindingsForWorkItems -Alerts $alerts -Organization $Organization -Project $Project
     
     # Output results based on format
     switch ($OutputFormat) {
@@ -245,35 +272,38 @@ try {
             $workItems | ConvertTo-Json -Depth 10 | Write-Output
         }
         'CSV' {
-            $workItems | Export-Csv -Path "SecretScanningFindings_$($RepositoryOwner)_$($RepositoryName)_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv" -NoTypeInformation
-            Write-ColorOutput "Results exported to CSV file." -Color Green
+            $csvFileName = "SecretScanningFindings_$($Organization)_$($Project)_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+            $workItems | Export-Csv -Path $csvFileName -NoTypeInformation
+            Write-ColorOutput "Results exported to CSV file: $csvFileName" -Color Green
         }
         'Console' {
-            Write-ColorOutput "Secret Scanning Findings - Ready for Work Item Creation:" -Color Cyan
-            Write-ColorOutput "=========================================================" -Color Cyan
+            Write-ColorOutput "Azure DevOps Secret Scanning Findings - Ready for Work Item Creation:" -Color Cyan
+            Write-ColorOutput "=====================================================================" -Color Cyan
             Write-Output ""
             
             foreach ($item in $workItems) {
                 Write-ColorOutput "Alert #$($item.AlertNumber): $($item.Title)" -Color Yellow
+                Write-Output "  Organization/Project: $Organization/$Project"
                 Write-Output "  Repository: $($item.Repository)"
                 Write-Output "  File: $($item.FileName)$(if ($item.LineNumber) { ":$($item.LineNumber)" })"
                 Write-Output "  Secret Type: $($item.SecretType)"
                 Write-Output "  State: $($item.State)"
+                Write-Output "  Severity: $($item.Severity)"
                 Write-Output "  Priority: $($item.Priority)"
-                Write-Output "  GitHub URL: $($item.GitHubAlertUrl)"
+                Write-Output "  Alert URL: $($item.AlertUrl)"
                 Write-Output "  Created: $($item.CreatedAt)"
                 Write-Output "  Tags: $($item.Tags -join ', ')"
                 Write-Output ""
                 Write-ColorOutput "  Work Item Description:" -Color Cyan
                 Write-Output "  $($item.Description)"
                 Write-Output "  File affected: $($item.FileName)"
-                Write-Output "  Direct link to finding: $($item.GitHubAlertUrl)"
+                Write-Output "  Direct link to finding: $($item.AlertUrl)"
                 Write-Output ""
                 Write-Output "  Recommended Actions:"
                 Write-Output "  1. Review the secret in file: $($item.FileName)"
                 Write-Output "  2. Remove or rotate the exposed secret"
                 Write-Output "  3. Update any systems using this secret"
-                Write-Output "  4. Mark the alert as resolved in GitHub"
+                Write-Output "  4. Mark the alert as resolved in Azure DevOps"
                 Write-Output ""
                 Write-ColorOutput "  " + "─" * 80 -Color Gray
                 Write-Output ""

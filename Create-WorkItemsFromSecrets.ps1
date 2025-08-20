@@ -2,74 +2,74 @@
 
 <#
 .SYNOPSIS
-    Creates work items from GitHub secret scanning findings in various work item systems.
+    Creates Azure DevOps work items from Azure DevOps Advanced Security secret scanning findings.
 
 .DESCRIPTION
-    This script extends the Get-SecretScanningFindings.ps1 script by actually creating work items
-    in supported work item systems like Azure DevOps, GitHub Issues, or Jira.
+    This script extends the Get-SecretScanningFindings.ps1 script by creating work items
+    in Azure DevOps for each secret scanning finding discovered by Advanced Security.
 
-.PARAMETER RepositoryOwner
-    The GitHub username or organization that owns the repository.
+.PARAMETER Organization
+    The Azure DevOps organization name.
 
-.PARAMETER RepositoryName
-    The name of the GitHub repository to scan for secret findings.
+.PARAMETER Project
+    The Azure DevOps project name.
 
-.PARAMETER GitHubToken
-    Personal Access Token for GitHub API authentication.
+.PARAMETER Repository
+    The repository name within the project (optional - if not specified, processes all repos in project).
 
-.PARAMETER WorkItemSystem
-    The work item system to use. Valid values: 'GitHubIssues', 'AzureDevOps', 'Console'.
+.PARAMETER PersonalAccessToken
+    Personal Access Token for Azure DevOps API authentication with Advanced Security and Work Items permissions.
 
-.PARAMETER GitHubIssuesToken
-    GitHub token for creating issues (can be same as GitHubToken).
+.PARAMETER WorkItemType
+    The type of work item to create. Default is 'Bug'. Can be 'Bug', 'Task', 'User Story', etc.
 
-.PARAMETER AzureDevOpsOrganization
-    Azure DevOps organization name (required for AzureDevOps system).
+.PARAMETER AssignTo
+    Email address or display name of the person to assign the work items to (optional).
 
-.PARAMETER AzureDevOpsProject
-    Azure DevOps project name (required for AzureDevOps system).
+.PARAMETER AreaPath
+    Area path for the work items (optional - uses project default if not specified).
 
-.PARAMETER AzureDevOpsPAT
-    Azure DevOps Personal Access Token (required for AzureDevOps system).
-
-.EXAMPLE
-    .\Create-WorkItemsFromSecrets.ps1 -RepositoryOwner "myorg" -RepositoryName "myrepo" -GitHubToken "ghp_xxxx" -WorkItemSystem "GitHubIssues"
+.PARAMETER IterationPath
+    Iteration path for the work items (optional - uses project default if not specified).
 
 .EXAMPLE
-    .\Create-WorkItemsFromSecrets.ps1 -RepositoryOwner "myorg" -RepositoryName "myrepo" -GitHubToken "ghp_xxxx" -WorkItemSystem "AzureDevOps" -AzureDevOpsOrganization "myorg" -AzureDevOpsProject "myproject" -AzureDevOpsPAT "xxx"
+    .\Create-WorkItemsFromSecrets.ps1 -Organization "myorg" -Project "myproject" -PersonalAccessToken "xxx"
+
+.EXAMPLE
+    .\Create-WorkItemsFromSecrets.ps1 -Organization "myorg" -Project "myproject" -Repository "myrepo" -PersonalAccessToken "xxx" -WorkItemType "Task" -AssignTo "user@company.com"
 
 .NOTES
     Author: GitHub Copilot
-    Version: 1.0
+    Version: 2.0
     This script depends on Get-SecretScanningFindings.ps1
+    Requires Azure DevOps PAT with 'Advanced Security' read and 'Work Items' read/write permissions.
 #>
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$RepositoryOwner,
+    [string]$Organization,
     
     [Parameter(Mandatory = $true)]
-    [string]$RepositoryName,
+    [string]$Project,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$Repository,
     
     [Parameter(Mandatory = $true)]
-    [string]$GitHubToken,
-    
-    [Parameter(Mandatory = $true)]
-    [ValidateSet('GitHubIssues', 'AzureDevOps', 'Console')]
-    [string]$WorkItemSystem,
+    [string]$PersonalAccessToken,
     
     [Parameter(Mandatory = $false)]
-    [string]$GitHubIssuesToken,
+    [string]$WorkItemType = 'Bug',
     
     [Parameter(Mandatory = $false)]
-    [string]$AzureDevOpsOrganization,
+    [string]$AssignTo,
     
     [Parameter(Mandatory = $false)]
-    [string]$AzureDevOpsProject,
+    [string]$AreaPath,
     
     [Parameter(Mandatory = $false)]
-    [string]$AzureDevOpsPAT
+    [string]$IterationPath
 )
 
 # Import the main script functions (assuming it's in the same directory)
@@ -84,73 +84,17 @@ if (-not (Test-Path $mainScript)) {
 # Dot source the main script to access its functions
 . $mainScript
 
-# Function to create GitHub Issues
-function New-GitHubIssue {
-    param(
-        [object]$WorkItem,
-        [string]$Owner,
-        [string]$Repo,
-        [string]$Token
-    )
-    
-    $headers = @{
-        'Authorization' = "token $Token"
-        'Accept' = 'application/vnd.github.v3+json'
-        'Content-Type' = 'application/json'
-    }
-    
-    $body = @{
-        title = $WorkItem.Title
-        body = @"
-## Security Alert: Secret Detected
-
-**Repository:** $($WorkItem.Repository)
-**File:** ``$($WorkItem.FileName)``$(if ($WorkItem.LineNumber) { " (Line $($WorkItem.LineNumber))" })
-**Secret Type:** $($WorkItem.SecretType)
-**Priority:** $($WorkItem.Priority)
-
-### Description
-$($WorkItem.Description)
-
-### Direct Link to Finding
-🔗 [View in GitHub Security Tab]($($WorkItem.GitHubAlertUrl))
-
-### Remediation Steps
-1. **Immediate Action Required:** Remove or rotate the exposed secret
-2. Review the affected file: ``$($WorkItem.FileName)``
-3. Update any systems or applications using this secret
-4. Verify no other instances of this secret exist in the codebase
-5. Mark the security alert as resolved once remediated
-
-### Additional Information
-- **Created:** $($WorkItem.CreatedAt)
-- **Alert Number:** #$($WorkItem.AlertNumber)
-- **Current State:** $($WorkItem.State)
-
----
-*This issue was automatically created from GitHub Secret Scanning findings.*
-"@
-        labels = $WorkItem.Tags + @("security", "automated")
-    } | ConvertTo-Json -Depth 10
-    
-    try {
-        $uri = "https://api.github.com/repos/$Owner/$Repo/issues"
-        $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Post -Body $body
-        return $response
-    }
-    catch {
-        Write-Error "Failed to create GitHub issue: $($_.Exception.Message)"
-        return $null
-    }
-}
-
 # Function to create Azure DevOps Work Item
 function New-AzureDevOpsWorkItem {
     param(
         [object]$WorkItem,
         [string]$Organization,
         [string]$Project,
-        [string]$PAT
+        [string]$PAT,
+        [string]$WorkItemType = 'Bug',
+        [string]$AssignTo,
+        [string]$AreaPath,
+        [string]$IterationPath
     )
     
     $encodedPAT = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$PAT"))
@@ -160,17 +104,19 @@ function New-AzureDevOpsWorkItem {
     }
     
     $description = @"
-<h2>Security Alert: Secret Detected</h2>
+<h2>Security Alert: Secret Detected by Advanced Security</h2>
+<p><strong>Organization/Project:</strong> $Organization/$Project</p>
 <p><strong>Repository:</strong> $($WorkItem.Repository)</p>
 <p><strong>File:</strong> <code>$($WorkItem.FileName)</code>$(if ($WorkItem.LineNumber) { " (Line $($WorkItem.LineNumber))" })</p>
 <p><strong>Secret Type:</strong> $($WorkItem.SecretType)</p>
+<p><strong>Severity:</strong> $($WorkItem.Severity)</p>
 <p><strong>Priority:</strong> $($WorkItem.Priority)</p>
 
 <h3>Description</h3>
 <p>$($WorkItem.Description)</p>
 
 <h3>Direct Link to Finding</h3>
-<p><a href="$($WorkItem.GitHubAlertUrl)">View in GitHub Security Tab</a></p>
+<p><a href="$($WorkItem.AlertUrl)">View Alert in Azure DevOps</a></p>
 
 <h3>Remediation Steps</h3>
 <ol>
@@ -183,12 +129,14 @@ function New-AzureDevOpsWorkItem {
 
 <h3>Additional Information</h3>
 <ul>
-<li><strong>Created:</strong> $($WorkItem.CreatedAt)</li>
+<li><strong>Alert ID:</strong> $($WorkItem.AlertId)</li>
 <li><strong>Alert Number:</strong> #$($WorkItem.AlertNumber)</li>
 <li><strong>Current State:</strong> $($WorkItem.State)</li>
+<li><strong>Created:</strong> $($WorkItem.CreatedAt)</li>
+$(if ($WorkItem.UpdatedAt) { "<li><strong>Updated:</strong> $($WorkItem.UpdatedAt)</li>" })
 </ul>
 
-<p><em>This work item was automatically created from GitHub Secret Scanning findings.</em></p>
+<p><em>This work item was automatically created from Azure DevOps Advanced Security secret scanning findings.</em></p>
 "@
 
     $workItemFields = @(
@@ -206,23 +154,67 @@ function New-AzureDevOpsWorkItem {
             op = "add"
             path = "/fields/System.Tags"
             value = ($WorkItem.Tags -join "; ")
-        },
-        @{
-            op = "add"
-            path = "/fields/Microsoft.VSTS.Common.Priority"
-            value = switch ($WorkItem.Priority) {
-                'High' { 1 }
-                'Medium' { 2 }
-                'Low' { 3 }
-                default { 2 }
-            }
         }
     )
+    
+    # Add priority field
+    $workItemFields += @{
+        op = "add"
+        path = "/fields/Microsoft.VSTS.Common.Priority"
+        value = switch ($WorkItem.Priority) {
+            'High' { 1 }
+            'Medium' { 2 }
+            'Low' { 3 }
+            default { 2 }
+        }
+    }
+    
+    # Add severity field if available
+    if ($WorkItem.Severity) {
+        $workItemFields += @{
+            op = "add"
+            path = "/fields/Microsoft.VSTS.Common.Severity"
+            value = switch ($WorkItem.Severity) {
+                'critical' { "1 - Critical" }
+                'high' { "2 - High" }
+                'medium' { "3 - Medium" }
+                'low' { "4 - Low" }
+                default { "3 - Medium" }
+            }
+        }
+    }
+    
+    # Add assignment if specified
+    if ($AssignTo) {
+        $workItemFields += @{
+            op = "add"
+            path = "/fields/System.AssignedTo"
+            value = $AssignTo
+        }
+    }
+    
+    # Add area path if specified
+    if ($AreaPath) {
+        $workItemFields += @{
+            op = "add"
+            path = "/fields/System.AreaPath"
+            value = $AreaPath
+        }
+    }
+    
+    # Add iteration path if specified
+    if ($IterationPath) {
+        $workItemFields += @{
+            op = "add"
+            path = "/fields/System.IterationPath"
+            value = $IterationPath
+        }
+    }
     
     $body = $workItemFields | ConvertTo-Json -Depth 10
     
     try {
-        $uri = "https://dev.azure.com/$Organization/$Project/_apis/wit/workitems/`$Bug?api-version=7.0"
+        $uri = "https://dev.azure.com/$Organization/$Project/_apis/wit/workitems/`$$WorkItemType?api-version=7.0"
         $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Post -Body $body
         return $response
     }
@@ -232,62 +224,23 @@ function New-AzureDevOpsWorkItem {
     }
 }
 
-# Function to output work items to console (for testing/demo)
-function Write-WorkItemToConsole {
-    param([object]$WorkItem)
-    
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-    Write-Host "WORK ITEM CREATED" -ForegroundColor Yellow
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "Title: $($WorkItem.Title)" -ForegroundColor White
-    Write-Host "Repository: $($WorkItem.Repository)" -ForegroundColor Gray
-    Write-Host "File: $($WorkItem.FileName)" -ForegroundColor Gray
-    Write-Host "Secret Type: $($WorkItem.SecretType)" -ForegroundColor Gray
-    Write-Host "Priority: $($WorkItem.Priority)" -ForegroundColor $(
-        switch ($WorkItem.Priority) {
-            'High' { 'Red' }
-            'Medium' { 'Yellow' }
-            'Low' { 'Green' }
-            default { 'White' }
-        }
-    )
-    Write-Host "GitHub Alert URL: $($WorkItem.GitHubAlertUrl)" -ForegroundColor Blue
-    Write-Host "Tags: $($WorkItem.Tags -join ', ')" -ForegroundColor Magenta
-    Write-Host ""
-}
-
 # Main execution
 try {
-    Write-Host "GitHub Secret Scanning Work Item Creator" -ForegroundColor Cyan
-    Write-Host "=======================================" -ForegroundColor Cyan
+    Write-Host "Azure DevOps Advanced Security Work Item Creator" -ForegroundColor Cyan
+    Write-Host "===============================================" -ForegroundColor Cyan
     Write-Host ""
     
-    # Validate parameters based on work item system
-    switch ($WorkItemSystem) {
-        'GitHubIssues' {
-            if (-not $GitHubIssuesToken) {
-                $GitHubIssuesToken = $GitHubToken
-            }
-        }
-        'AzureDevOps' {
-            if (-not $AzureDevOpsOrganization -or -not $AzureDevOpsProject -or -not $AzureDevOpsPAT) {
-                Write-Error "Azure DevOps requires -AzureDevOpsOrganization, -AzureDevOpsProject, and -AzureDevOpsPAT parameters"
-                exit 1
-            }
-        }
-    }
-    
-    # Get secret scanning findings
-    Write-Host "Retrieving secret scanning findings..." -ForegroundColor Yellow
-    $alerts = Get-SecretScanningAlerts -Owner $RepositoryOwner -Repo $RepositoryName -Token $GitHubToken -IncludeResolved $false
+    # Get secret scanning findings using the main script functions
+    Write-Host "Retrieving secret scanning findings from Azure DevOps Advanced Security..." -ForegroundColor Yellow
+    $alerts = Get-AzureDevOpsSecretScanningAlerts -Organization $Organization -Project $Project -Repository $Repository -Token $PersonalAccessToken -IncludeResolved $false
     
     if ($alerts.Count -eq 0) {
-        Write-Host "No secret scanning alerts found. No work items to create." -ForegroundColor Green
+        $targetDescription = if ($Repository) { "$Organization/$Project/$Repository" } else { "$Organization/$Project (all repositories)" }
+        Write-Host "No secret scanning alerts found for $targetDescription. No work items to create." -ForegroundColor Green
         exit 0
     }
     
-    $workItems = Format-FindingsForWorkItems -Alerts $alerts -Owner $RepositoryOwner -Repo $RepositoryName
+    $workItems = Format-FindingsForWorkItems -Alerts $alerts -Organization $Organization -Project $Project
     
     Write-Host "Found $($workItems.Count) finding(s). Creating work items..." -ForegroundColor Green
     Write-Host ""
@@ -298,30 +251,14 @@ try {
     foreach ($workItem in $workItems) {
         Write-Host "Processing Alert #$($workItem.AlertNumber): $($workItem.SecretType)" -ForegroundColor Yellow
         
-        $result = $null
-        switch ($WorkItemSystem) {
-            'GitHubIssues' {
-                $result = New-GitHubIssue -WorkItem $workItem -Owner $RepositoryOwner -Repo $RepositoryName -Token $GitHubIssuesToken
-                if ($result) {
-                    Write-Host "✓ Created GitHub Issue #$($result.number): $($result.html_url)" -ForegroundColor Green
-                    $successCount++
-                } else {
-                    $failureCount++
-                }
-            }
-            'AzureDevOps' {
-                $result = New-AzureDevOpsWorkItem -WorkItem $workItem -Organization $AzureDevOpsOrganization -Project $AzureDevOpsProject -PAT $AzureDevOpsPAT
-                if ($result) {
-                    Write-Host "✓ Created Azure DevOps Work Item #$($result.id): $($result._links.html.href)" -ForegroundColor Green
-                    $successCount++
-                } else {
-                    $failureCount++
-                }
-            }
-            'Console' {
-                Write-WorkItemToConsole -WorkItem $workItem
-                $successCount++
-            }
+        $result = New-AzureDevOpsWorkItem -WorkItem $workItem -Organization $Organization -Project $Project -PAT $PersonalAccessToken -WorkItemType $WorkItemType -AssignTo $AssignTo -AreaPath $AreaPath -IterationPath $IterationPath
+        
+        if ($result) {
+            Write-Host "✓ Created Azure DevOps Work Item #$($result.id): $($result._links.html.href)" -ForegroundColor Green
+            $successCount++
+        } else {
+            Write-Host "✗ Failed to create work item for Alert #$($workItem.AlertNumber)" -ForegroundColor Red
+            $failureCount++
         }
         Write-Host ""
     }
@@ -336,7 +273,11 @@ try {
     if ($failureCount -gt 0) {
         Write-Host "Failed to create: $failureCount" -ForegroundColor Red
     }
-    Write-Host "Work item system: $WorkItemSystem" -ForegroundColor Gray
+    Write-Host "Organization/Project: $Organization/$Project" -ForegroundColor Gray
+    Write-Host "Work item type: $WorkItemType" -ForegroundColor Gray
+    if ($AssignTo) {
+        Write-Host "Assigned to: $AssignTo" -ForegroundColor Gray
+    }
     Write-Host ""
     Write-Host "Script completed." -ForegroundColor Green
 }
